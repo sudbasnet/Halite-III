@@ -1,0 +1,22 @@
+                # now check some of the things that the first IF might have missed:
+                    # the halite at my current place is still less than 10% of MAX,
+                        # OR, there's gridlock at shipyard, OR, the ship is at the shipyard
+                    # next position is also the same as my current position
+                elif (game_map[ship.position].halite_amount < 0.1 * constants.MAX_HALITE
+                      # or gridlock(game_map, me.shipyard.position, 2)
+                      or ship.position in me.shipyard.position.get_surrounding_cardinals()
+                      or ship.position == me.shipyard.position) and next_pos == ship.position:
+                    for second_choice in ship.position.get_surrounding_cardinals():
+                        if not game_map[second_choice].is_occupied and second_choice not in next_positions:
+                            # next_pos = second_choice
+                            break
+        elif gridlock(game_map, me.shipyard.position, 2) is True and \
+                (ship.position in me.shipyard.position.get_surrounding_cardinals() or ship.position == me.shipyard.position):
+            for third_choice in ship.position.get_surrounding_cardinals():
+                if third_choice not in next_positions and not game_map[third_choice].is_occupied:
+                    # next_pos = third_choice
+                    break
+
+
+
+                        # and not game_map[first_choice].is_occupied \
