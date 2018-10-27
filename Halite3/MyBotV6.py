@@ -202,6 +202,8 @@ while True:
     options = get_best_resource_locations(game, 30)
     # get enemy shipyard and dock information
     # check every 100 turn number to find the best location for creating a new drop off
+
+    """POTENTIAL DROPOFF"""
     potential_dropoff_location = None
     if game.turn_number in [100, 300]:
         best_dropoff_options = get_potential_dropoffs(game)
@@ -213,12 +215,11 @@ while True:
             for x in all_available_dropoffs:
                 if game_map.calculate_distance(x, dropoff[0]) < min_distance_to_my_dropoff:
                     min_distance_to_my_dropoff = game_map.calculate_distance(x, dropoff[0])
-                    if min_distance_to_enemy_dropoff >= 0.6 * maximum_distance_possible:
-                        potential_dropoff_location = dropoff[0]
-                        break
-            break
+                if min_distance_to_my_dropoff >=0.5 * maximum_distance_possible:
+                    potential_dropoff_location = x
+                    break
         logging.info("potential_dropoff_location is %s", potential_dropoff_location)
-
+    """POTENTIAL DROPOFF"""
     # a collection of positions of all the ships in my fleet
     all_ship_positions = get_all_ship_positions(me)
 
@@ -337,7 +338,7 @@ while True:
             logging.info("level 5, random move")
 
         # enemy ship found, avoid it
-        if game_map[next_pos].is_occupied and next_pos not in all_ship_positions:
+        if game_map[next_pos].is_occupied and next_pos not in all_ship_positions and next_pos not in all_available_dropoffs:
             next_pos = random_move(game_map, ship, next_positions + still_positions + charged_positions, check_occupied=True)
             logging.info("level 5, random move")
 
@@ -370,7 +371,7 @@ while True:
                 logging.info(next_positions)
             next_positions.append(next_pos)
 
-        if game.turn_number > get_total_turn_count(game) * 0.99 and ship.id in target_lock and ship.position in target_lock[ship.id].get_surrounding_cardinals():
+        if game.turn_number > get_total_turn_count(game) * 0.97 and ship.id in target_lock and ship.position in target_lock[ship.id].get_surrounding_cardinals():
             next_direction = (game_map.get_unsafe_moves(ship.position, target_lock[ship.id]) + [game_map.naive_navigate(ship, target_lock[ship.id])])[0]
             if ship.position == target_lock[ship.id]:
                 next_direction == Direction.Still
