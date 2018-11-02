@@ -17,11 +17,6 @@ from math import inf
 #   (print statements) are reserved for the engine-bot communication.
 import logging
 
-""" <<<Game Established>>> """
-# This game object contains the initial game state.
-game = hlt.Game()
-
-occupied_position = []
 """ <<<Initialize all functions>>> """
 # total number of turns based on the grid size (linear relationship)
 def get_total_turn_count(height):
@@ -62,6 +57,7 @@ def random_move(input_ship, reserved_positions):
     move_options = input_ship.position.get_surrounding_cardinals()
     random.shuffle(move_options)
     for option in move_options:
+        option = game_map.normalize(option)
         if option not in reserved_positions:
             return option
     return input_ship.position
@@ -75,6 +71,7 @@ def directed_move(input_map, input_ship, destination, reserved_positions, includ
         move_options = move_options + [input_ship.position]
     d = inf
     for option in move_options:
+        option = input_map.normalize(option)
         if option not in reserved_positions:
             if input_map.calculate_distance(option, destination) < d:
                 d = input_map.calculate_distance(option, destination)
@@ -94,19 +91,30 @@ def resource_graph(input_game):
     all_resources.sort(key=by_halite, reverse=True)
     return all_resources
 
+def get_neighborhood(input_game_map, pos, radius = 2):
+    neighborhood = []
+    x_min, y_min = pos.x - radius, pos.y - radius
+    x_max, y_max = pos.x + radius, pos.y + radius
+    for x in range(x_min, x_max + 1):
+        for y in range(y_min, y_max + 1):
+            position = input_game_map.normalize(Position(x, y))
+            if input_game_map.calculate_distance(pos, position) <= radius:
+                neighborhood.append(position)
+    return neighborhood
 
-def mean_halite(in_game_map, pos):
+def mean_halite(in_game_map, pos, radius):
     halite_at_pos = in_game_map[pos].halite_amount
-    for p in  pos.get_surrounding_cardinals():
+    surrounding = get_neighborhood(in_game_map, pos, radius)
+    for p in  surrounding:
         halite_at_pos += in_game_map[p].halite_amount
-    return halite_at_pos/5
+    return halite_at_pos/len(surrounding)
 
 
 def get_best_resource_locations(input_game, top = 5):
     rg = resource_graph(input_game)[:top]  # return top 5
     final_rg = []
     for x in rg:
-        mean_at = mean_halite(input_game.game_map, x[0])
+        mean_at = mean_halite(input_game.game_map, x[0], 3)
         final_rg.append((x[0], mean_at))
     final_rg.sort(key=by_halite, reverse=True)
     return final_rg
@@ -124,15 +132,15 @@ def find_best_resource_location(pos, resource_collection):
 # probability of reproduction (exponential) decreases as the turn-number increases
 def get_reproduction_rate(turn_number, height):
     if (turn_number/get_total_turn_count(height)) < 0.20:
-        return 0.8
+        return 0.9
     elif (turn_number/get_total_turn_count(height)) < 0.30:
-        return 0.7
+        return 0.8
     elif (turn_number/get_total_turn_count(height)) < 0.40:
-        return 0.5
+        return 0.7
     elif (turn_number/get_total_turn_count(height)) < 0.50:
-        return 0.3
+        return 0.5
     elif (turn_number/get_total_turn_count(height)) < 0.70:
-        return 0.2
+        return 0.3
     elif (turn_number/get_total_turn_count(height)) < 0.100:
         return 0.1
     else:
@@ -213,7 +221,7 @@ def get_neighborhood_enemy_details(input_game_map, position, radius, own_positio
     max_y = y + radius + 1
     for i in range(min_x, max_x):
         for j in range(min_y, max_y):
-            pos = Position(i, j)
+            pos = input_game_map.normalize(Position(i, j))
             if input_game_map[pos].is_occupied and pos not in own_positions:
                 enemy_map.append((pos, True))
     return enemy_map
@@ -229,6 +237,18 @@ def get_enemy_ship_locations(input_game_map, my_ships_and_depos, height, dont_ch
                     enemy_ships.append(position)
     return enemy_ships
 
+# get a list of positions where enemy bots might move to, takes the position of enemy bots as input
+def collision_zone(input_game_map, enemy):
+    col_list = []
+    for e in enemy:
+        cardinals = e.get_surrounding_cardinals()
+        for c in cardinals:
+            col_list.append(input_game_map.normalize(c))
+    return col_list
+
+""" <<<Game Established>>> """
+# This game object contains the initial game state.
+game = hlt.Game()
 
 """ <<< Map Variables and Functions >>> """
 # maximum distance between two points in the map
@@ -246,6 +266,14 @@ delivery_bots = {} # {ship.id : destination.position}
 # next positions that ships will take
 ship_navigation = {} # {ship.id : ship.position}
 
+# hunter level
+# this dictionary tells which of the best options does a bot pursue
+hunter_level = {}
+
+
+# see if dropoff needs to be created
+create_dropoff = False
+
 # all bot-type lists initialization
 paralyzed_bots = [] # bots that have less than 10% of the halite in their position
 scout_bots = [] # for experimental reasons
@@ -257,13 +285,14 @@ pilot_fish_bots = [] # these bots follow a shark bot and collect halite from the
 
 # find delivery bots, ship.ids only
 def activate_delivery_bots(in_game):
+    global create_dropoff
     for ship in in_game.me.get_ships():
 
         # get the closest drop-off locaition
         closest_drop_off = get_closest_drop_off(game, ship.position)
 
         # If towards the end, make everyone go to the deposit
-        if in_game.turn_number >= 0.95 * get_total_turn_count(in_game.game_map.height):
+        if in_game.turn_number >= 0.94 * get_total_turn_count(in_game.game_map.height):
             delivery_bots[ship.id] = closest_drop_off
 
         # Free up hoarding ships that just deposited halite
@@ -271,25 +300,33 @@ def activate_delivery_bots(in_game):
             delivery_bots.pop(ship.id)
 
         # Check if any ship is full, make it a hoarder
-        if ship.is_full and ship.id not in delivery_bots and not gridlock(in_game.game_map, closest_drop_off, 3):
+        if ship.is_full and ship.id not in delivery_bots and not gridlock(in_game.game_map, closest_drop_off, 4):
             delivery_bots[ship.id] = closest_drop_off
+            # if create_dropoff and in_game.game_map.calculate_distance( closest_drop_off) >= 0.3 * maximum_distance_possible and me.halite_amount > 2 * constants.DROPOFF_COST:
+            #     ship.make_dropoff()
+            #     create_dropoff = False
+            # else:
+            #
+
+        # this function also assigns the hunter level
+        if ship.id not in hunter_level:
+            hunter_level[ship.id] = random.randint(0,1)
 
 
-# find Gatherers, they retain their positions
-def find_gatherer_bots(in_game, reserved_ships):
-    positions = []
-    for ship in in_game.me.get_ships():
-        if ((in_game.game_map[ship.position].halite_amount >= 0.04 * constants.MAX_HALITE )\
-                or (in_game.game_map[ship.position].halite_amount * 0.1 > ship.halite_amount)) and ship.id not in reserved_ships:
-            logging.info("ship %d is a gatherer, at position %s", ship.id, ship.position)
-            positions.append(ship.position)
-            ship_navigation[ship.id] = ship.position
-            if in_game.game_map[ship.position].halite_amount * 0.1 > ship.halite_amount:
-                paralyzed_bots.append(ship.id)
-            else:
-                gatherer_bots.append(ship.id)
-    return positions
-
+# # find Gatherers, they retain their positions
+# def find_gatherer_bots(in_game, reserved_ships):
+#     positions = []
+#     for ship in in_game.me.get_ships():
+#         if ((in_game.game_map[ship.position].halite_amount >= 0.04 * constants.MAX_HALITE )\
+#                 or (in_game.game_map[ship.position].halite_amount * 0.1 > ship.halite_amount)) and ship.id not in reserved_ships:
+#             logging.info("ship %d is a gatherer, at position %s", ship.id, ship.position)
+#             positions.append(ship.position)
+#             ship_navigation[ship.id] = ship.position
+#             if in_game.game_map[ship.position].halite_amount * 0.1 > ship.halite_amount:
+#                 paralyzed_bots.append(ship.id)
+#             else:
+#                 gatherer_bots.append(ship.id)
+#     return positions
 
 # find Gatherers, they retain their positions
 def find_paralyzed_bots(in_game):
@@ -307,7 +344,7 @@ def get_moves_delivery_bots(in_game, reserved_positions):
     positions = []
     for ship in in_game.me.get_ships():
         if ship.id in delivery_bots and ship.position not in all_available_dropoffs:
-            next_position = directed_move(in_game.game_map, ship, delivery_bots[ship.id], reserved_positions + positions + enemy_bots, include_self=False)
+            next_position = directed_move(in_game.game_map, ship, delivery_bots[ship.id], reserved_positions + positions + enemy_bots, include_self=True)
             ship_navigation[ship.id] = next_position
             positions.append(next_position)
             logging.info("ship %d is a delivery bot, from position %s, going to %s", ship.id, ship.position, next_position)
@@ -323,12 +360,35 @@ def get_moves_hunter_bots(in_game, reserved_positions):
             next_position = None
             best_halite = halite_at_position
             move_options = ship.position.get_surrounding_cardinals()
-            if in_game.game_map[ship.position].halite_amount >= 0.04 * constants.MAX_HALITE:
+            min_halite = 0.01
+
+            if game.turn_number <= 200:
+                min_halite = 0.04
+            elif game.turn_number <= 300:
+                min_halite = 0.03
+            elif game.turn_number <= 400:
+                min_halite = 0.02
+            else:
+                min_halite = 0.01
+
+            if in_game.game_map[ship.position].halite_amount >= min_halite * constants.MAX_HALITE:
                 next_position = directed_move(in_game.game_map, ship, ship.position, reserved_positions + positions + enemy_bots,
                                          include_self=True)
+            threshold = 0.5
+            if in_game.turn_number < 20:
+                threshold = 0.75
+            elif in_game.turn_number < 50:
+                threshold = 0.6
+            elif in_game.turn_number < 100:
+                threshold = 0.5
+            else:
+                threshold = 0.45
+
             for op in move_options:
+                op = in_game.game_map.normalize(op)
                 neighbor_halite = game_map[op].halite_amount
-                if halite_at_position < neighbor_halite * 0.5 and op not in (reserved_positions + positions):
+                logging.info("the run number is %d and the threshold is %s", game.turn_number, threshold)
+                if 0.01 * constants.MAX_HALITE < halite_at_position < neighbor_halite * threshold and op not in (reserved_positions + positions):
                     if neighbor_halite > best_halite:
                         best_halite = neighbor_halite
                         next_position = op
@@ -377,7 +437,10 @@ while True:
 
     """ <<<Important Map Variables that need to refresh>>> """
     # top something richest locations on the map
-    rich_locations = get_best_resource_locations(game, 30)
+    rich_locations = get_best_resource_locations(game, 300)
+
+    # top 10 best halite sites as the best dropoff location
+    dropoff_options = rich_locations[:100]
 
     # collection of positions of all the ships in my fleet
     all_ship_positions = get_all_ship_positions(me)
@@ -385,11 +448,26 @@ while True:
     # get a list of all available drop-offs in my fleet
     all_available_dropoffs = get_all_depos(me)
 
+    # set up time for creating dropoff
+    create_dropoff = False
+    if len(all_ship_positions) >= 25 and game.turn_number >= 200 and len(all_available_dropoffs) == 1:
+        create_dropoff = True
+        logging.info("Dropoff 1 is active")
+    if len(all_ship_positions) >= 35 and game.turn_number >= 200 and len(all_available_dropoffs) == 2:
+        create_dropoff = True
+        logging.info("Dropoff 2 is active")
+
+
     # get the location of all enemy ships
     enemy_bots = get_enemy_ship_locations(game_map, all_ship_positions + all_available_dropoffs, game_map.height, all_available_dropoffs)
 
-    # get the list of best resource location (game, "top")
-    best_resources = get_best_resource_locations(game, 30)
+    # positions that can result in collision
+    # the possible movable spaces of enemy bots is prone to collision
+    # we try to protect our delivery bots from collision at least
+    collision_prone = collision_zone(game_map, enemy_bots)
+
+    # # get the list of best resource location (game, "top")
+    # best_resources = get_best_resource_locations(game, 100)
 
     # A command queue holds all the commands, submit it at the end of the turn.
     command_queue = []
@@ -402,15 +480,15 @@ while True:
     # get all bot positions that will remain still because of paralysis
     paralyzed_bots_next_positions = find_paralyzed_bots(game)
 
+    # now activate the hunter bots
+    # return positions of every bot so fat, not just hunter bots
+    next_positions = get_moves_hunter_bots(game, paralyzed_bots_next_positions + enemy_bots + collision_prone)
+
     # get next position for bots that are trying to deliver payload
     # we give them the next priority because we dont want them still
     # its a waste of time to make them wait
     # these bots must not collide with the paralyzed bots
-    delivery_bots_next_positions = get_moves_delivery_bots(game, paralyzed_bots_next_positions + enemy_bots)
-
-    # now activate the hunter bots
-    # return positions of every bot so fat, not just hunter bots
-    next_positions = get_moves_hunter_bots(game, delivery_bots_next_positions + paralyzed_bots_next_positions + enemy_bots)
+    next_positions = next_positions + get_moves_delivery_bots(game, next_positions + enemy_bots + collision_prone)
 
     # all bots not covered by the above are called confused bots
     # find next position for confused bots
@@ -418,13 +496,16 @@ while True:
     for shp in me.get_ships():
         closest_drop_off_position = get_closest_drop_off(game, shp.position)
         if shp.id not in ship_navigation:
+            hunter_lvl = hunter_level[shp.id]
             # next_pos = None
             # get_neighborhood_halite_details(game_map, shp.position, 2)
             # if game_map[shp.position].halite_amount < 0.025 * constants.MAX_HALITE and random.random() <= 0.7 :
-            best_option = find_best_resource_location(shp.position, rich_locations)
-            best_options = best_option[:1]
-            random.shuffle(best_options)
-            next_pos = directed_move(game_map, shp, best_options[0][0], next_positions + enemy_bots, include_self=True)
+            best_options = find_best_resource_location(shp.position, rich_locations)
+            # best_options = best_option[:1]
+            # random.shuffle(best_options)
+
+            next_pos = directed_move(game_map, shp, best_options[hunter_lvl][0], next_positions + collision_prone + enemy_bots, include_self=True)
+            logging.info("best option for the bot to go to is %s", best_options[hunter_lvl][0])
             logging.info("ship %d is a nothing bot, from position %s, doing directed move, going to %s", shp.id, shp.position, next_pos)
             if next_pos in next_positions:
                 logging.info("PROBLEM")
@@ -434,7 +515,7 @@ while True:
 
         next_direction = (game_map.get_unsafe_moves(shp.position, ship_navigation[shp.id]) + [game_map.naive_navigate(shp, ship_navigation[shp.id])])[0]
 
-        if game.turn_number >= 0.95 * get_total_turn_count(game_map.height) and shp.position in closest_drop_off_position.get_surrounding_cardinals():
+        if game.turn_number >= 0.94 * get_total_turn_count(game_map.height) and shp.position in closest_drop_off_position.get_surrounding_cardinals():
             next_direction = game_map.get_unsafe_moves(shp.position, closest_drop_off_position)[0]
 
         if next_direction == Direction.Still:
